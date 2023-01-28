@@ -1,4 +1,3 @@
-import PySimpleGUI as sg
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import PySimpleGUI as sg
 import matplotlib
@@ -104,7 +103,7 @@ def animate(i, ys1, ys2):
 
 while True:
     event, values = window.read()
-    ani = animation.FuncAnimation(fig1, animate, fargs=(ys1, ys2,), interval=1000, blit=True)
+    ani = animation.FuncAnimation(fig1, animate, fargs=(ys1, ys2,), interval=10, blit=True)
     plt.show()
     print(event)
     window['-Temp1-'].update(ys1[-1])
