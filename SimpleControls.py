@@ -10,6 +10,26 @@ I2C is used to communicate with the Adafruit SHT40 temp
  and humidity sensor located in the electronics box. (0x44).
 SPI is used to communicate with the 2x Adafruit MAX31856 Thermocouple DACs.
 """
+
+"""                                                 Relay                                   Binary to Int
+        Mode        Setting                         N2  O2  F   Bypass, Boiler, Heater
+    00  OFF         No Furnace, N2                  0   0   0   0                           0
+    01  OFF, PH     No Furnace, Wet O2              0   0   0   1  (pre-heat mode)          1
+    02  OFF         No Furnace, Dry O2              0   0   0   0                           0   
+    10  F1, N2      Top Furnace, N2 Gas             1   0   0   0                           8
+    11  F1, Wet     Top Furnace, Wet O2             0   1   0   1                           5
+    12  F1, Dry     Top Furnace, Dry O2             0   1   0   0                           4
+    20  F2, N2      Bottom Furnace, N2 Gas          1   0   1   0                           10
+    21  F2, Wet     Bottom Furnace, Wet O2          0   1   1   1                           7
+    22  F2, Dry     Bottom Furnace, Dry O2          0   1   1   0                           6
+    
+    31  F1, N2+     Top Furnace, N2 + Preheat       1   0   0   1                           9
+    41  F2, N2+     Bottom Furnace, N2 + Preheat    1   0   1   1                           11
+"""
+
+
+
+
 # Library Imports
 import signal
 import sys
@@ -18,20 +38,25 @@ import board
 import digitalio
 import adafruit_max31856
 import adafruit_sht4x
+from bitarray import bitarray
 import time
 
 ## Define key parameters for control
 triggerN2 = 300     ## degrees Celsius
 triggerO2 = 1000    ## degrees Celsius
 
+fluidRelays = bitarray(4)    ## 3 2 1 0 ::  [Bubbler, Heaterwrap, DirB], DirF, N2, O2
+
+commandMode = 0
+desiredMode = 0
+operationMode = 0
+
 ## Define User Interface Input Pins
-inputWet = 0        ## 3 pos switch for oxygen moved to "wet"
-inputDry = 11       ## 3 pos switch for oxygen moved to "dry"
-inputFurn1 = 26     ## 3 pos switch for furnace moved to Top Furnace (typically oxidation)
-inputFurn2 = 1      ## 3 pos switcg fir furnace moved to Bottom Furnace (typically diffusion)
-inputA = 16         ## Rotary encoder A channel
-inputB = 20         ## Rotary encoder B channel
-inputS = 21         ## Rotary encoder input button (select)
+selectPins = [0, 11, 26, 1] ## wet02, dry02, top furnace, bottom furnace
+for pin in selectPins:
+    GPIO.setup(pin, GPIO.IN, pull_up_down = GPIO.PUD_UP)
+
+rotaryPins = [16, 20, 21]   ## Rotary Encoder A, B, Select
 
 ## Define Sensor Input Pins
 inputLevel = 10     ## water level low float
@@ -41,28 +66,17 @@ inputPresO2 = 19    ## oxygen ...
 # SCLHum = 13       ## SCL for i2c(1) ...
 
 ## Define Outputs
-relayH2O = 2        ## Water flow on (high) off (low)
-relayO2 = 3         ## O2 flow on (high) off (low)
-relayN2 = 4         ## N2 flow on (high) off (low)
-relayDirB = 17      ## Directional: Low is bypass, high is "wet"
-relayDirF = 27      ## Directional: Low is Oxidation (upper), high is Diffusion (lower) furnace
-relayHeater = 22    ## 1 to turn heater on, 0 for off
-relayBubbler = 0    ## !!!!!!!!!!!!!!!!! pick pin
-relayFans = 9       ## 1 to turn electrical box fans on, 0 for off
+relayPins = [2, 3, 4, 17, 27, 22, 0, 9] ## H20, O2, N2, DirB, DifF, Heater, Bubbler, Fans
+for pin in relayPins:
+    GPIO.setup(pin, GPIO.OUT)
+    GPIO.output(pin, GPIO.LOW)
 
 def signal_handler(sig, frame):
     GPIO.cleanup()
     sys.exit(0)
 
 def user_selection_callback(pinNum):
-    switcher = {
-        inputWet: "Wet Selected",
-        inputDry: "Dry selected",
-        inputFurn1: "Furnace 1 Selected",
-        inputFurn2: "Furnace 2 Selected",
-    }
-    print(switcher.get(pinNum, "Error"))
-
+    pass
 
 def encoder_callback(channel):
     pass
@@ -70,123 +84,119 @@ def encoder_callback(channel):
 def sensor_callback(channel):
     pass
 
-def kill_fluid_relays():
-    GPIO.output(relayDirF, GPIO.LOW)
-    GPIO.output(relayDirB, GPIO.LOW)
-    GPIO.output(relayH2O, GPIO.LOW)
-    GPIO.output(relayN2, GPIO.LOW)
-    GPIO.output(relayO2, GPIO.LOW)
-    return None
+def kill_relays()
+    pass
 
-def kill_all_relays():
-    kill_fluid_relays()
-    GPIO.output(relayFans, GPIO.LOW)
-    GPIO.output(relayHeater, GPIO.LOW)
-    return None
-
-kill_all_relays()
 def mode_check():
     checkDry = GPIO.input(inputDry)
     checkWet = GPIO.input(inputWet)
     checkF1 = GPIO.input(inputFurn1)
     checkF2 = GPIO.input(inputFurn2)
-    desiredMode = checkWet + 2 * checkDry + (checkF1 + 2 * checkF2) * 10
-    """                                                 Relay
-            Mode        Setting                         N2  O2  F   Bypass, Boiler, Heater
-        00  OFF         No Furnace, N2                  0   0   0   0 
-        01  OFF         No Furnace, Wet O2              0   0   0   1  (pre-heat mode)
-        02  OFF         No Furnace, Dry O2              0   0   0   0
-        10  F1, N2      Top Furnace, N2 Gas             1   0   0   0
-        11  F1, Wet     Top Furnace, Wet O2             0   1   0   1
-        12  F1, Dry     Top Furnace, Dry O2             0   1   0   0
-        13  F1, N2+     Top Furnace, N2 + Preheat       1   0   0   1
-        20  F2, N2      Bottom Furnace, N2 Gas          1   0   1   0
-        21  F2, Wet     Bottom Furnace, Wet O2          0   1   1   1
-        22  F2, Dry     Bottom Furnace, Dry O2          0   1   1   0
-        23  F2, N2+     Bottom Furnace, N2 + Preheat    1   0   1   1
-    """
-    return desiredMode
+    result = (checkWet + 2 * checkDry + (checkF1 + 2 * checkF2) * 10)
+    return  result
 
-def system_check():
+def check_temps():
     f1Temp = furnace1temp.temperature
     f2Temp = furnace2temp.temperature
     return f1Temp, f2Temp
 
-def pickOperation(operationMode, F1Temp, F2Temp):
-    match operationMode:
-        case 0:
-            temperatureControlled(desiredMode, F1Temp, F2Temp)
-        case 1:
-            commandRelays(operationMode)
-        case default:
-            return "Error"
+def pickOperation(operationMode, desiredMode, F1Temp, F2Temp):
+    if operationMode == 0:
+        newMode = temperatureControlled(desiredMode, F1Temp, F2Temp)
+        return newMode
+    elif operationMode == 1:
+        commandRelays(desiredMode)
+        newMode = desiredMode
+        return newMode
+    else:
+         return "Error"
 
 def temperatureControlled(desiredMode, F1Temp, F2Temp):
-    match desiredMode:
-        case 0: # No Furnace, N2
+    if desiredMode == 0 or desiredMode == 2:
+        # No Furnace, N2
+        commandRelays(0) # off
+        return 0
+
+    elif desiredMode == 1:
+        # No Furnace, Preheat
+        commandRelays(desiredMode)
+        return desiredMode
+
+    elif desiredMode == 2:
+        # No Furnace, Dry O2
+        commandRelays(desiredMode)
+        return desiredMode
+
+    elif desiredMode == 10:
+        # Upper Furnace, N2 Only
+        if F1Temp < triggerN2:
+            commandRelays(2)
+            return 2
+        else:
             commandRelays(desiredMode)
             return desiredMode
-        case 1: # No Furnace, Preheat
+
+    elif desiredMode == 11:
+        # Upper Furnace, Wet O2
+        if F1Temp <= triggerN2:
+            commandRelays(1) # preheat
+            return 1
+        elif triggerN2 < F1Temp <= triggerO2: # flow N2 while still preheating
+            commandRelays(13)
+            return 13
+        else:
             commandRelays(desiredMode)
             return desiredMode
-        case 2: # No Furnace, Dry O2
-            commandRelays(desiredMode)
-            return desiredMode
-        case 10: # Upper Furnace, N2 Only
-            if F1Temp < triggerN2:
-                commandRelays(2)
-                return 2
-            else:
-                commandRelays(desiredMode)
-                return desiredMode
-        case 11: # Upper Furnace, Wet O2
-            if F1Temp < triggerN2:
-                commandRelays(1) # preheat
-                return 1
-            elif triggerN2 < F1Temp < triggerO2: # flow N2 while still preheating
-                commandRelays(13)
-                return 13
-            else:
-                commandRelays(desiredMode)
-                return desiredMode
-        case 12: # Upper furnace, Dry O2
-            if F1Temp < triggerN2:
+
+    elif desiredMode == 12:
+        # Upper furnace, Dry O2
+            if F1Temp <= triggerN2:
                 commandRelays(0)  # Off
                 return 0
-            elif triggerN2 < F1Temp < triggerO2:  # flow N2
-                commandRelays(10)
+            elif triggerN2 < F1Temp <= triggerO2:
+                commandRelays(10) # Top Furnace, N2
                 return 10
             else:
                 commandRelays(desiredMode)
                 return desiredMode
-        case 20: # Bottom Furnace, N2 Only
-            if F2Temp < triggerN2:
-                commandRelays(0)
-                return 0
-            else:
-                commandRelays(desiredMode)
-                return desiredMode
-        case 21: # Bottom Furnace, Wet O2
-            if F2Temp < triggerN2:
+
+    elif desiredMode == 20:
+        # Bottom Furnace, N2 Only
+        if F2Temp < triggerN2: # off
+            commandRelays(0)
+            return 0
+        else:
+            commandRelays(desiredMode)
+            return desiredMode
+
+    elif desiredMode == 21:
+        # Bottom Furnace, Wet O2
+            if F2Temp <= triggerN2:
                 commandRelays(1)  # preheat
                 return 1
-            elif triggerN2 < F2Temp < triggerO2:  # flow N2 while still preheating
+            elif triggerN2 < F2Temp <= triggerO2:  # flow N2 bottom while still preheating
                 commandRelays(23)
                 return 23
             else:
                 commandRelays(desiredMode)
                 return desiredMode
-        case 22: # Bottom Furnace, Dry O2
-            if F2Temp < triggerN2:
+
+    elif desiredMode == 22:
+        # Bottom Furnace, Dry O2
+            if F2Temp <= triggerN2:
                 commandRelays(0)  # Off
                 return 0
-            elif triggerN2 < F2Temp < triggerO2:  # flow N2
+            elif triggerN2 < F2Temp <= triggerO2:  # flow N2 bottom furnace
                 commandRelays(20)
                 return 20
             else:
                 commandRelays(desiredMode)
                 return desiredMode
 def commandRelays(commandMode):
+
+
+
+
     ## Nitrogen on/off
     if commandMode == 10 or 20 or 13:
         GPIO.output(relayN2, GPIO.HIGH)
@@ -268,10 +278,11 @@ if __name__ == '__main__':
     GPIO.add_event_detect(inputLevel, GPIO.BOTH, waterFill_callback, debouce=1000)
 
     # system defaults
-    commandMode = 0
-    desiredMode = 0
+
 
     # main loop
     while True:
-        F1Temp, F2Temp = system_check()
-        pickOperation(desiredMode, F1Temp, F2Temp)
+        #F1Temp, F2Temp = system_check()
+        F1Temp = 100
+        F2Temp = 125
+        pickOperation(operationMode, desiredMode, F1Temp, F2Temp)
